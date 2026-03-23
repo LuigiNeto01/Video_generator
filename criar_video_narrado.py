@@ -1,5 +1,4 @@
 import argparse
-import math
 import os
 import re
 import shutil
@@ -16,35 +15,48 @@ from yt_dlp.utils import DownloadError
 ARQUIVO_TEXTO_PADRAO = "texto.txt"
 ARQUIVO_TITULO_PADRAO = "titulo.txt"
 PASTA_SAIDA_PADRAO = "video_narrado"
-PASTA_PARTES = "partes"
-PASTA_ASSETS = "assets"
 ARQUIVO_VIDEO_BASE = "background.mp4"
 ARQUIVO_AUDIO = "narracao.mp3"
 MODELO_TTS = "gpt-4o-mini-tts"
 MODELO_TRANSCRICAO = "whisper-1"
 VOZ_PADRAO = "coral"
-LARGURA_VIDEO = 1080
-ALTURA_VIDEO = 1920
+
+# Portrait (vertical) — 1080x1920, audio 1.5x, max 60s
+LARGURA_VERTICAL = 1080
+ALTURA_VERTICAL = 1920
+VELOCIDADE_AUDIO_VERTICAL = 1.5
+DURACAO_MAXIMA_VERTICAL = 60.0
+NOME_VIDEO_VERTICAL = "video_vertical.mp4"
+
+# Landscape — 1920x1080, velocidade normal, duracao completa
+LARGURA_PAISAGEM = 1920
+ALTURA_PAISAGEM = 1080
+NOME_VIDEO_PAISAGEM = "video_paisagem.mp4"
+
+# Legendas
 FONTE_LEGENDA = "Janda Manatee Solid"
-TAMANHO_FONTE_LEGENDA = 24
-CONTORNO_LEGENDA = 5
+TAMANHO_FONTE_LEGENDA_VERTICAL = 24
+TAMANHO_FONTE_LEGENDA_PAISAGEM = 32
+CONTORNO_LEGENDA = 3
 MAX_CARACTERES_LEGENDA = 12
-DURACAO_MAXIMA_PARTE = 60.0
-PADDING_ABERTURA = 0.4
-PADDING_ENCERRAMENTO = 0.6
-TAMANHO_FONTE_TITULO = 44
-TAMANHO_FONTE_PARTE = 28
-TAMANHO_FONTE_ENCERRAMENTO = 34
-CONTORNO_TEXTO_CARD = 6
-MAX_CARACTERES_TITULO = 32
+
+# Overlays de texto
+TAMANHO_FONTE_TITULO_VERTICAL = 44
+TAMANHO_FONTE_TITULO_PAISAGEM = 56
+CONTORNO_TEXTO = 3
+MAX_CARACTERES_TITULO_VERTICAL = 32
+MAX_CARACTERES_TITULO_PAISAGEM = 45
 ESPACAMENTO_LINHAS_TITULO = -10
-POSICAO_Y_TITULO = 0.20
-MARGEM_TITULO_PARTE = 180
-TEXTO_ENCERRAMENTO = "assista a pr\u00f3xima parte no youtube"
-TEXTO_ENCERRAMENTO_FALA = "Assista \u00e0 pr\u00f3xima parte no YouTube."
+POSICAO_Y_TITULO = 0.10
+
+TAMANHO_FONTE_ENCERRAMENTO = 48
+TEXTO_ENCERRAMENTO_VERTICAL = "Parte 2 no link da bio"
+DURACAO_OVERLAY_ENCERRAMENTO = 5.0
+
 INSTRUCOES_PADRAO = (
     "Fale com naturalidade, em portugues do Brasil, com ritmo claro e envolvente."
 )
+
 StatusCallback = Callable[[str], None]
 
 
@@ -53,21 +65,6 @@ class Legenda:
     inicio: float
     fim: float
     texto: str
-
-
-@dataclass
-class PartePlano:
-    indice: int
-    total: int
-    inicio_conteudo: float
-    fim_conteudo: float
-    duracao_conteudo: float
-    duracao_abertura_slot: float
-    duracao_encerramento_audio: float
-    caminho_audio_abertura: Path
-    caminho_audio_encerramento: Path
-    texto_abertura_card: str
-    duracao_saida: float
 
 
 def informar(status_callback: StatusCallback | None, mensagem: str) -> None:
@@ -79,12 +76,10 @@ def carregar_env(caminho: str = ".env") -> None:
     arquivo = Path(caminho)
     if not arquivo.exists():
         return
-
     for linha in arquivo.read_text(encoding="utf-8").splitlines():
         linha = linha.strip()
         if not linha or linha.startswith("#") or "=" not in linha:
             continue
-
         chave, valor = linha.split("=", 1)
         chave = chave.strip()
         valor = valor.strip().strip('"').strip("'")
@@ -96,7 +91,6 @@ def localizar_ffmpeg() -> Path | None:
     ffmpeg_no_path = shutil.which("ffmpeg")
     if ffmpeg_no_path:
         return Path(ffmpeg_no_path).resolve()
-
     pasta_winget = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
     if pasta_winget.exists():
         candidatos = sorted(
@@ -106,7 +100,6 @@ def localizar_ffmpeg() -> Path | None:
         )
         if candidatos:
             return candidatos[0].resolve()
-
     return None
 
 
@@ -114,11 +107,9 @@ def localizar_ffprobe(ffmpeg: Path) -> Path:
     ffprobe = ffmpeg.with_name("ffprobe.exe" if ffmpeg.suffix.lower() == ".exe" else "ffprobe")
     if ffprobe.exists():
         return ffprobe
-
     ffprobe_no_path = shutil.which("ffprobe")
     if ffprobe_no_path:
         return Path(ffprobe_no_path).resolve()
-
     raise SystemExit("O ffprobe nao foi encontrado junto do ffmpeg.")
 
 
@@ -129,12 +120,10 @@ def garantir_dependencias() -> tuple[Path, Path]:
             "O ffmpeg nao foi encontrado. Instale o ffmpeg e deixe-o no PATH para "
             "baixar o video em boa qualidade e renderizar as legendas no MP4."
         )
-
     if not os.getenv("OPENAI_API_KEY"):
         raise SystemExit(
             "Defina OPENAI_API_KEY no ambiente ou no arquivo .env antes de executar."
         )
-
     ffprobe = localizar_ffprobe(ffmpeg)
     return ffmpeg, ffprobe
 
@@ -143,11 +132,9 @@ def ler_texto(caminho_arquivo: str) -> str:
     arquivo = Path(caminho_arquivo).expanduser().resolve()
     if not arquivo.exists():
         raise SystemExit(f"Arquivo de texto nao encontrado: {arquivo}")
-
     texto = arquivo.read_text(encoding="utf-8").strip()
     if not texto:
         raise SystemExit(f"O arquivo esta vazio: {arquivo}")
-
     return texto
 
 
@@ -168,19 +155,16 @@ def baixar_video(url: str, pasta_saida: Path, ffmpeg: Path) -> Path:
         "windowsfilenames": True,
         "quiet": False,
     }
-
     try:
         with yt_dlp.YoutubeDL(opcoes) as ydl:
             ydl.download([url])
     except DownloadError as erro:
         raise SystemExit(f"Falha ao baixar o video: {erro}") from erro
-
     if not arquivo_saida.exists():
         candidatos = sorted(pasta_saida.glob("background.*"))
         if not candidatos:
             raise SystemExit("Nao consegui localizar o video baixado.")
         arquivo_saida = candidatos[0]
-
     return arquivo_saida
 
 
@@ -200,7 +184,6 @@ def gerar_audio(
         response_format="mp3",
     ) as response:
         response.stream_to_file(arquivo_saida)
-
     return arquivo_saida
 
 
@@ -208,12 +191,9 @@ def obter_duracao_midia(ffprobe: Path, arquivo: Path) -> float:
     resultado = subprocess.run(
         [
             str(ffprobe),
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             str(arquivo),
         ],
         check=True,
@@ -230,7 +210,6 @@ def _ler_campo(item: object, chave: str):
 
 
 def transcrever_audio(client: OpenAI, arquivo_audio: Path):
-    # Os timestamps de palavra sao usados para fazer a legenda andar com a narracao.
     with arquivo_audio.open("rb") as audio_file:
         retorno = client.audio.transcriptions.create(
             model=MODELO_TRANSCRICAO,
@@ -238,7 +217,6 @@ def transcrever_audio(client: OpenAI, arquivo_audio: Path):
             response_format="verbose_json",
             timestamp_granularities=["word"],
         )
-
     palavras = _ler_campo(retorno, "words") or []
     if not palavras:
         raise SystemExit(
@@ -253,38 +231,24 @@ def normalizar_texto_legenda(texto: str) -> str:
     return texto.strip()
 
 
-def normalizar_texto_fala(texto: str) -> str:
-    return re.sub(r"\s+", " ", texto).strip()
-
-
 def dividir_palavra_se_necessario(item, max_caracteres: int):
     texto = (_ler_campo(item, "word") or "").strip()
     inicio = _ler_campo(item, "start")
     fim = _ler_campo(item, "end")
     if not texto or inicio is None or fim is None:
         return []
-
     inicio = float(inicio)
     fim = float(fim)
     if len(texto) <= max_caracteres:
         return [{"texto": texto, "inicio": inicio, "fim": fim}]
-
     partes = [texto[i : i + max_caracteres] for i in range(0, len(texto), max_caracteres)]
     duracao_total = max(fim - inicio, 0.01)
     quantidade_partes = len(partes)
     palavras_divididas = []
-
     for indice, parte in enumerate(partes):
         inicio_parte = inicio + (duracao_total * indice / quantidade_partes)
         fim_parte = inicio + (duracao_total * (indice + 1) / quantidade_partes)
-        palavras_divididas.append(
-            {
-                "texto": parte,
-                "inicio": inicio_parte,
-                "fim": fim_parte,
-            }
-        )
-
+        palavras_divididas.append({"texto": parte, "inicio": inicio_parte, "fim": fim_parte})
     return palavras_divididas
 
 
@@ -322,11 +286,7 @@ def criar_legendas(
                     " ".join(parte["texto"] for parte in bloco)
                 )
                 legendas.append(
-                    Legenda(
-                        inicio=inicio_bloco,
-                        fim=bloco[-1]["fim"],
-                        texto=texto_bloco,
-                    )
+                    Legenda(inicio=inicio_bloco, fim=bloco[-1]["fim"], texto=texto_bloco)
                 )
                 bloco = []
                 inicio_bloco = item["inicio"]
@@ -344,11 +304,7 @@ def criar_legendas(
 
             if fecha_bloco or atingiu_limite:
                 legendas.append(
-                    Legenda(
-                        inicio=inicio_bloco,
-                        fim=bloco[-1]["fim"],
-                        texto=texto_bloco,
-                    )
+                    Legenda(inicio=inicio_bloco, fim=bloco[-1]["fim"], texto=texto_bloco)
                 )
                 bloco = []
                 inicio_bloco = None
@@ -366,6 +322,27 @@ def criar_legendas(
     return legendas
 
 
+def criar_legendas_velocidade(palavras, velocidade: float, duracao_maxima: float):
+    """Cria legendas com timestamps ajustados pela velocidade, limitadas a duracao_maxima."""
+    palavras_ajustadas = []
+    for palavra in palavras:
+        texto = (_ler_campo(palavra, "word") or "").strip()
+        inicio = _ler_campo(palavra, "start")
+        fim = _ler_campo(palavra, "end")
+        if not texto or inicio is None or fim is None:
+            continue
+        inicio_adj = float(inicio) / velocidade
+        fim_adj = float(fim) / velocidade
+        if inicio_adj >= duracao_maxima:
+            break
+        palavras_ajustadas.append({
+            "word": texto,
+            "start": inicio_adj,
+            "end": min(fim_adj, duracao_maxima),
+        })
+    return criar_legendas(palavras_ajustadas)
+
+
 def formatar_tempo_srt(segundos: float) -> str:
     total_ms = max(0, int(round(segundos * 1000)))
     horas, resto = divmod(total_ms, 3_600_000)
@@ -379,12 +356,10 @@ def salvar_legendas(legendas, arquivo_saida: Path) -> Path:
     for indice, legenda in enumerate(legendas, start=1):
         linhas.append(str(indice))
         linhas.append(
-            f"{formatar_tempo_srt(legenda.inicio)} --> "
-            f"{formatar_tempo_srt(legenda.fim)}"
+            f"{formatar_tempo_srt(legenda.inicio)} --> {formatar_tempo_srt(legenda.fim)}"
         )
         linhas.append(legenda.texto)
         linhas.append("")
-
     arquivo_saida.write_text("\n".join(linhas), encoding="utf-8")
     return arquivo_saida
 
@@ -397,181 +372,34 @@ def quebrar_texto(texto: str, largura_maxima: int) -> str:
             if linhas and linhas[-1] != "":
                 linhas.append("")
             continue
-
         linhas.extend(textwrap.wrap(bloco, width=largura_maxima, break_long_words=False))
-
     return "\n".join(linhas).strip()
 
 
-def obter_duracao_narracao(palavras) -> float:
-    return max(float(_ler_campo(palavra, "end") or 0.0) for palavra in palavras)
+def encontrar_duracao_titulo(palavras, titulo: str) -> float:
+    """Estima o tempo de fim do titulo na transcricao pelo numero de palavras."""
+    num_palavras = len(titulo.split())
+    if num_palavras > 0 and len(palavras) >= num_palavras:
+        return float(_ler_campo(palavras[num_palavras - 1], "end") or 3.0)
+    return 3.0
 
 
-def montar_texto_abertura_card(titulo: str) -> str:
-    return quebrar_texto(titulo, MAX_CARACTERES_TITULO)
-
-
-def montar_texto_abertura_fala(titulo: str, indice: int, total: int) -> str:
-    titulo_fala = normalizar_texto_fala(titulo)
-    return f"{titulo_fala}. Parte {indice} de {total}."
-
-
-def calcular_posicao_y_parte(texto_abertura_card: str) -> int:
-    quantidade_linhas = max(1, texto_abertura_card.count("\n") + 1)
-    altura_linha = TAMANHO_FONTE_TITULO + (CONTORNO_TEXTO_CARD * 2) + max(0, ESPACAMENTO_LINHAS_TITULO)
-    altura_bloco = TAMANHO_FONTE_TITULO + max(0, quantidade_linhas - 1) * altura_linha
-    return int((ALTURA_VIDEO * POSICAO_Y_TITULO) + altura_bloco + MARGEM_TITULO_PARTE)
-
-
-def limpar_saidas_antigas(pasta_partes: Path) -> None:
-    for padrao in ("parte_*.mp4", "parte_*.srt", "parte_*_titulo.txt", "parte_*_encerramento.txt"):
-        for arquivo in pasta_partes.glob(padrao):
-            arquivo.unlink(missing_ok=True)
-
-    pasta_assets = pasta_partes / PASTA_ASSETS
-    if pasta_assets.exists():
-        for arquivo in pasta_assets.glob("*.mp3"):
-            arquivo.unlink(missing_ok=True)
-
-
-def preparar_planos_partes(
-    client: OpenAI,
-    ffprobe: Path,
-    palavras,
-    titulo: str,
-    pasta_partes: Path,
-    voz: str,
-    instrucoes: str,
-    status_callback: StatusCallback | None = None,
-):
-    duracao_narracao = obter_duracao_narracao(palavras)
-    pasta_assets = pasta_partes / PASTA_ASSETS
-    pasta_assets.mkdir(parents=True, exist_ok=True)
-
-    total_partes = max(1, math.ceil(duracao_narracao / 48.0))
-    duracao_abertura_slot = 0.0
-    duracao_encerramento_audio = 0.0
-    caminhos_abertura = {}
-    caminho_encerramento = pasta_assets / "encerramento.mp3"
-
-    for _ in range(6):
-        informar(status_callback, "Gerando fala de encerramento...")
-        gerar_audio(
-            client,
-            TEXTO_ENCERRAMENTO_FALA,
-            caminho_encerramento,
-            voz,
-            instrucoes,
-        )
-        duracao_encerramento_audio = obter_duracao_midia(ffprobe, caminho_encerramento)
-
-        duracao_abertura_slot = 0.0
-        caminhos_abertura = {}
-        for indice in range(1, total_partes + 1):
-            caminho_abertura = pasta_assets / f"parte_{indice:02d}_abertura.mp3"
-            informar(status_callback, f"Gerando fala de abertura da parte {indice}/{total_partes}...")
-            gerar_audio(
-                client,
-                montar_texto_abertura_fala(titulo, indice, total_partes),
-                caminho_abertura,
-                voz,
-                instrucoes,
-            )
-            duracao_audio_abertura = obter_duracao_midia(ffprobe, caminho_abertura)
-            caminhos_abertura[indice] = (caminho_abertura, duracao_audio_abertura)
-            duracao_abertura_slot = max(
-                duracao_abertura_slot,
-                duracao_audio_abertura + PADDING_ABERTURA,
-            )
-
-        duracao_conteudo_por_parte = (
-            DURACAO_MAXIMA_PARTE
-            - duracao_abertura_slot
-            - duracao_encerramento_audio
-            - PADDING_ENCERRAMENTO
-        )
-        if duracao_conteudo_por_parte <= 5:
-            raise SystemExit(
-                "A abertura e o encerramento ficaram longos demais para caber em partes de 60 segundos."
-            )
-
-        novo_total = max(1, math.ceil(duracao_narracao / duracao_conteudo_por_parte))
-        if novo_total == total_partes:
-            break
-        total_partes = novo_total
-    else:
-        raise SystemExit("Nao foi possivel estabilizar o calculo das partes.")
-
-    planos = []
-    texto_abertura_card = montar_texto_abertura_card(titulo)
-    for indice in range(1, total_partes + 1):
-        inicio_conteudo = (indice - 1) * duracao_conteudo_por_parte
-        fim_conteudo = min(duracao_narracao, inicio_conteudo + duracao_conteudo_por_parte)
-        duracao_conteudo = max(0.01, fim_conteudo - inicio_conteudo)
-        caminho_abertura, _ = caminhos_abertura[indice]
-
-        planos.append(
-            PartePlano(
-                indice=indice,
-                total=total_partes,
-                inicio_conteudo=inicio_conteudo,
-                fim_conteudo=fim_conteudo,
-                duracao_conteudo=duracao_conteudo,
-                duracao_abertura_slot=duracao_abertura_slot,
-                duracao_encerramento_audio=duracao_encerramento_audio,
-                caminho_audio_abertura=caminho_abertura,
-                caminho_audio_encerramento=caminho_encerramento,
-                texto_abertura_card=texto_abertura_card,
-                duracao_saida=DURACAO_MAXIMA_PARTE,
-            )
-        )
-
-    return planos
-
-
-def criar_palavras_da_parte(palavras, parte: PartePlano):
-    palavras_filtradas = []
-
-    for palavra in palavras:
-        texto = (_ler_campo(palavra, "word") or "").strip()
-        inicio = _ler_campo(palavra, "start")
-        fim = _ler_campo(palavra, "end")
-        if not texto or inicio is None or fim is None:
-            continue
-
-        inicio = float(inicio)
-        fim = float(fim)
-        if fim <= parte.inicio_conteudo or inicio >= parte.fim_conteudo:
-            continue
-
-        inicio_relativo = max(inicio, parte.inicio_conteudo) - parte.inicio_conteudo
-        fim_relativo = min(fim, parte.fim_conteudo) - parte.inicio_conteudo
-
-        palavras_filtradas.append(
-            {
-                "word": texto,
-                "start": inicio_relativo + parte.duracao_abertura_slot,
-                "end": fim_relativo + parte.duracao_abertura_slot,
-            }
-        )
-
-    return palavras_filtradas
-
-
-def renderizar_parte(
+def renderizar_video_vertical(
     ffmpeg: Path,
     video_fundo: Path,
     audio_narracao: Path,
     legenda: Path,
-    texto_abertura: Path,
+    texto_titulo: Path,
     texto_encerramento: Path,
-    parte: PartePlano,
+    duracao_titulo: float,
+    duracao_saida: float,
     video_saida: Path,
 ) -> Path:
+    """Renderiza o video 1080x1920 com audio a 1.5x e overlay de encerramento."""
     estilo_legenda = (
         "Alignment=2,"
         f"FontName={FONTE_LEGENDA},"
-        f"FontSize={TAMANHO_FONTE_LEGENDA},"
+        f"FontSize={TAMANHO_FONTE_LEGENDA_VERTICAL},"
         "PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,"
         "BorderStyle=1,"
@@ -579,163 +407,122 @@ def renderizar_parte(
         "Shadow=0,"
         "MarginV=110"
     )
-    inicio_encerramento = parte.duracao_abertura_slot + parte.duracao_conteudo
-    duracao_congelamento_final = parte.duracao_saida - inicio_encerramento
-    delay_conteudo_ms = int(round(parte.duracao_abertura_slot * 1000))
-    delay_encerramento_ms = int(round(inicio_encerramento * 1000))
-    posicao_y_parte = calcular_posicao_y_parte(parte.texto_abertura_card)
+    inicio_encerramento = max(0.0, duracao_saida - DURACAO_OVERLAY_ENCERRAMENTO)
 
     filtro_video = (
         f"[0:v]"
-        f"scale={LARGURA_VIDEO}:{ALTURA_VIDEO}:force_original_aspect_ratio=increase,"
-        f"crop={LARGURA_VIDEO}:{ALTURA_VIDEO},"
-        f"trim=start={parte.inicio_conteudo}:end={parte.fim_conteudo},"
+        f"scale={LARGURA_VERTICAL}:{ALTURA_VERTICAL}:force_original_aspect_ratio=increase,"
+        f"crop={LARGURA_VERTICAL}:{ALTURA_VERTICAL},"
         "setpts=PTS-STARTPTS,"
-        f"tpad=start_duration={parte.duracao_abertura_slot}:start_mode=clone:"
-        f"stop_duration={duracao_congelamento_final}:stop_mode=clone,"
         "setsar=1,"
         f"subtitles={legenda.name}:force_style='{estilo_legenda}',"
-        f"drawtext=font='{FONTE_LEGENDA}':textfile={texto_abertura.name}:"
-        f"fontcolor=white:fontsize={TAMANHO_FONTE_TITULO}:"
-        f"borderw={CONTORNO_TEXTO_CARD}:bordercolor=black:"
+        f"drawtext=font='{FONTE_LEGENDA}':textfile={texto_titulo.name}:"
+        f"fontcolor=white:fontsize={TAMANHO_FONTE_TITULO_VERTICAL}:"
+        f"borderw={CONTORNO_TEXTO}:bordercolor=black:"
         f"line_spacing={ESPACAMENTO_LINHAS_TITULO}:"
         f"x=(w-text_w)/2:y=(h*{POSICAO_Y_TITULO}):"
-        f"enable='between(t,0,{parte.duracao_abertura_slot})',"
-        f"drawtext=font='{FONTE_LEGENDA}':text='Parte {parte.indice}/{parte.total}':"
-        f"fontcolor=white:fontsize={TAMANHO_FONTE_PARTE}:"
-        f"borderw={CONTORNO_TEXTO_CARD}:bordercolor=black:"
-        f"x=(w-text_w)/2:y={posicao_y_parte}:"
-        f"enable='between(t,0,{parte.duracao_abertura_slot})',"
+        f"enable='between(t,0,{duracao_titulo:.3f})',"
         f"drawtext=font='{FONTE_LEGENDA}':textfile={texto_encerramento.name}:"
         f"fontcolor=white:fontsize={TAMANHO_FONTE_ENCERRAMENTO}:"
-        f"borderw={CONTORNO_TEXTO_CARD}:bordercolor=black:"
+        f"borderw={CONTORNO_TEXTO}:bordercolor=black:"
         "line_spacing=8:x=(w-text_w)/2:y=(h-text_h)/2:"
-        f"enable='between(t,{inicio_encerramento},{parte.duracao_saida})'[v]"
+        f"enable='between(t,{inicio_encerramento:.3f},{duracao_saida:.3f})'[v]"
     )
     filtro_audio = (
-        f"anullsrc=r=24000:cl=mono:d={parte.duracao_saida}[base];"
-        "[1:a]"
-        f"atrim=start={parte.inicio_conteudo}:end={parte.fim_conteudo},"
-        "asetpts=PTS-STARTPTS,aresample=24000,"
-        f"adelay={delay_conteudo_ms}:all=1[audio_conteudo];"
-        "[2:a]asetpts=PTS-STARTPTS,aresample=24000[audio_abertura];"
-        "[3:a]asetpts=PTS-STARTPTS,aresample=24000,"
-        f"adelay={delay_encerramento_ms}:all=1[audio_encerramento];"
-        "[base][audio_abertura][audio_conteudo][audio_encerramento]"
-        "amix=inputs=4:normalize=0:dropout_transition=0,"
-        f"atrim=0:{parte.duracao_saida}[a]"
+        f"[1:a]atempo={VELOCIDADE_AUDIO_VERTICAL},"
+        f"atrim=0:{duracao_saida:.3f},"
+        "asetpts=PTS-STARTPTS[a]"
     )
     filtro_complexo = f"{filtro_video};{filtro_audio}"
 
     comando = [
-        str(ffmpeg),
-        "-y",
-        "-stream_loop",
-        "-1",
-        "-i",
-        str(video_fundo),
-        "-i",
-        str(audio_narracao),
-        "-i",
-        str(parte.caminho_audio_abertura),
-        "-i",
-        str(parte.caminho_audio_encerramento),
-        "-filter_complex",
-        filtro_complexo,
-        "-map",
-        "[v]",
-        "-map",
-        "[a]",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "20",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-movflags",
-        "+faststart",
-        "-t",
-        str(parte.duracao_saida),
+        str(ffmpeg), "-y",
+        "-stream_loop", "-1",
+        "-i", str(video_fundo),
+        "-i", str(audio_narracao),
+        "-filter_complex", filtro_complexo,
+        "-map", "[v]",
+        "-map", "[a]",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "20",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        "-t", f"{duracao_saida:.3f}",
         str(video_saida),
     ]
 
     try:
-        subprocess.run(
-            comando,
-            check=True,
-            cwd=str(legenda.parent),
-        )
+        subprocess.run(comando, check=True, cwd=str(legenda.parent))
     except subprocess.CalledProcessError as erro:
-        raise SystemExit(f"Falha ao renderizar a parte {parte.indice}: {erro}") from erro
+        raise SystemExit(f"Falha ao renderizar o video vertical: {erro}") from erro
 
     return video_saida
 
 
-def criar_videos_em_partes(
-    client: OpenAI,
+def renderizar_video_paisagem(
     ffmpeg: Path,
-    ffprobe: Path,
     video_fundo: Path,
     audio_narracao: Path,
-    palavras,
-    titulo: str,
-    pasta_saida: Path,
-    voz: str,
-    instrucoes: str,
-    status_callback: StatusCallback | None = None,
-):
-    pasta_partes = pasta_saida / PASTA_PARTES
-    pasta_partes.mkdir(parents=True, exist_ok=True)
-    limpar_saidas_antigas(pasta_partes)
-
-    informar(status_callback, "Preparando as partes de 1 minuto...")
-    planos = preparar_planos_partes(
-        client,
-        ffprobe,
-        palavras,
-        titulo,
-        pasta_partes,
-        voz,
-        instrucoes,
-        status_callback,
+    legenda: Path,
+    texto_titulo: Path,
+    duracao_titulo: float,
+    duracao_saida: float,
+    video_saida: Path,
+) -> Path:
+    """Renderiza o video 1920x1080 com audio em velocidade normal e duracao completa."""
+    estilo_legenda = (
+        "Alignment=2,"
+        f"FontName={FONTE_LEGENDA},"
+        f"FontSize={TAMANHO_FONTE_LEGENDA_PAISAGEM},"
+        "PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,"
+        "BorderStyle=1,"
+        f"Outline={CONTORNO_LEGENDA},"
+        "Shadow=0,"
+        "MarginV=60"
     )
 
-    arquivos_saida = []
-    for parte in planos:
-        informar(status_callback, f"Renderizando a parte {parte.indice}/{parte.total}...")
-        palavras_da_parte = criar_palavras_da_parte(palavras, parte)
-        legendas = criar_legendas(palavras_da_parte)
+    filtro_video = (
+        f"[0:v]"
+        f"scale={LARGURA_PAISAGEM}:{ALTURA_PAISAGEM}:force_original_aspect_ratio=increase,"
+        f"crop={LARGURA_PAISAGEM}:{ALTURA_PAISAGEM},"
+        "setpts=PTS-STARTPTS,"
+        "setsar=1,"
+        f"subtitles={legenda.name}:force_style='{estilo_legenda}',"
+        f"drawtext=font='{FONTE_LEGENDA}':textfile={texto_titulo.name}:"
+        f"fontcolor=white:fontsize={TAMANHO_FONTE_TITULO_PAISAGEM}:"
+        f"borderw={CONTORNO_TEXTO}:bordercolor=black:"
+        f"line_spacing={ESPACAMENTO_LINHAS_TITULO}:"
+        f"x=(w-text_w)/2:y=(h*{POSICAO_Y_TITULO}):"
+        f"enable='between(t,0,{duracao_titulo:.3f})'[v]"
+    )
 
-        prefixo = f"parte_{parte.indice:02d}"
-        arquivo_legenda = salvar_legendas(legendas, pasta_partes / f"{prefixo}.srt")
-        arquivo_texto_abertura = salvar_texto(
-            parte.texto_abertura_card,
-            pasta_partes / f"{prefixo}_titulo.txt",
-        )
-        arquivo_texto_encerramento = salvar_texto(
-            quebrar_texto(TEXTO_ENCERRAMENTO, 20),
-            pasta_partes / f"{prefixo}_encerramento.txt",
-        )
-        arquivo_video = pasta_partes / f"{prefixo}.mp4"
+    comando = [
+        str(ffmpeg), "-y",
+        "-stream_loop", "-1",
+        "-i", str(video_fundo),
+        "-i", str(audio_narracao),
+        "-filter_complex", filtro_video,
+        "-map", "[v]",
+        "-map", "1:a",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "20",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        "-t", f"{duracao_saida:.3f}",
+        str(video_saida),
+    ]
 
-        renderizar_parte(
-            ffmpeg,
-            video_fundo,
-            audio_narracao,
-            arquivo_legenda,
-            arquivo_texto_abertura,
-            arquivo_texto_encerramento,
-            parte,
-            arquivo_video,
-        )
-        arquivos_saida.append(arquivo_video)
+    try:
+        subprocess.run(comando, check=True, cwd=str(legenda.parent))
+    except subprocess.CalledProcessError as erro:
+        raise SystemExit(f"Falha ao renderizar o video paisagem: {erro}") from erro
 
-    informar(status_callback, "Renderizacao concluida.")
-    return arquivos_saida
+    return video_saida
 
 
 def processar_video(
@@ -756,62 +543,105 @@ def processar_video(
     pasta_saida.mkdir(parents=True, exist_ok=True)
 
     client = OpenAI()
+
     informar(status_callback, "Baixando o video de fundo do YouTube...")
     video_fundo = baixar_video(url, pasta_saida, ffmpeg)
+
+    # A narracao comeca com o titulo e depois conta a historia
+    texto_narracao = f"{titulo}. {texto}"
+
     informar(status_callback, "Gerando a narracao principal...")
     audio_narracao = gerar_audio(
-        client,
-        texto,
-        pasta_saida / ARQUIVO_AUDIO,
-        voz,
-        instrucoes,
+        client, texto_narracao, pasta_saida / ARQUIVO_AUDIO, voz, instrucoes
     )
+
     informar(status_callback, "Transcrevendo a narracao para montar as legendas...")
     palavras = transcrever_audio(client, audio_narracao)
 
-    return criar_videos_em_partes(
-        client,
+    duracao_narracao = obter_duracao_midia(ffprobe, audio_narracao)
+    duracao_titulo = encontrar_duracao_titulo(palavras, titulo)
+
+    # Arquivos de texto para os overlays (drawtext)
+    arquivo_titulo_vertical = salvar_texto(
+        quebrar_texto(titulo, MAX_CARACTERES_TITULO_VERTICAL),
+        pasta_saida / "titulo_vertical.txt",
+    )
+    arquivo_titulo_paisagem = salvar_texto(
+        quebrar_texto(titulo, MAX_CARACTERES_TITULO_PAISAGEM),
+        pasta_saida / "titulo_paisagem.txt",
+    )
+    arquivo_encerramento = salvar_texto(
+        quebrar_texto(TEXTO_ENCERRAMENTO_VERTICAL, 22),
+        pasta_saida / "encerramento.txt",
+    )
+
+    # --- Video vertical (1080x1920, 1.5x, max 60s) ---
+    duracao_vertical = min(duracao_narracao / VELOCIDADE_AUDIO_VERTICAL, DURACAO_MAXIMA_VERTICAL)
+    duracao_titulo_vertical = duracao_titulo / VELOCIDADE_AUDIO_VERTICAL
+
+    informar(status_callback, "Criando legendas para o video vertical (1.5x)...")
+    legendas_vertical = criar_legendas_velocidade(palavras, VELOCIDADE_AUDIO_VERTICAL, duracao_vertical)
+    arquivo_srt_vertical = salvar_legendas(legendas_vertical, pasta_saida / "legendas_vertical.srt")
+
+    informar(status_callback, "Renderizando o video vertical (1080x1920, audio 1.5x)...")
+    arquivo_vertical = renderizar_video_vertical(
         ffmpeg,
-        ffprobe,
         video_fundo,
         audio_narracao,
-        palavras,
-        titulo,
-        pasta_saida,
-        voz,
-        instrucoes,
-        status_callback,
+        arquivo_srt_vertical,
+        arquivo_titulo_vertical,
+        arquivo_encerramento,
+        duracao_titulo_vertical,
+        duracao_vertical,
+        pasta_saida / NOME_VIDEO_VERTICAL,
     )
+
+    # --- Video paisagem (1920x1080, velocidade normal, duracao completa) ---
+    informar(status_callback, "Criando legendas para o video paisagem (velocidade normal)...")
+    legendas_paisagem = criar_legendas(palavras)
+    arquivo_srt_paisagem = salvar_legendas(legendas_paisagem, pasta_saida / "legendas_paisagem.srt")
+
+    informar(status_callback, "Renderizando o video paisagem (1920x1080, velocidade normal)...")
+    arquivo_paisagem = renderizar_video_paisagem(
+        ffmpeg,
+        video_fundo,
+        audio_narracao,
+        arquivo_srt_paisagem,
+        arquivo_titulo_paisagem,
+        duracao_titulo,
+        duracao_narracao,
+        pasta_saida / NOME_VIDEO_PAISAGEM,
+    )
+
+    informar(status_callback, "Renderizacao concluida.")
+    return [arquivo_vertical, arquivo_paisagem]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Baixa um video do YouTube, gera narracao TTS e cria varias partes "
-            "de ate 1 minuto com abertura, legenda e encerramento."
+            "Baixa um video do YouTube, gera narracao TTS e cria dois videos: "
+            "vertical de 1 minuto (1.5x) e paisagem em velocidade normal."
         )
     )
     parser.add_argument("url", help="URL do video do YouTube")
     parser.add_argument(
-        "-t",
-        "--texto",
+        "-t", "--texto",
         default=ARQUIVO_TEXTO_PADRAO,
         help=f"Arquivo com o texto da narracao. Padrao: {ARQUIVO_TEXTO_PADRAO}",
     )
     parser.add_argument(
         "--titulo",
         default=ARQUIVO_TITULO_PADRAO,
-        help=f"Arquivo com o titulo base de todas as partes. Padrao: {ARQUIVO_TITULO_PADRAO}",
+        help=f"Arquivo com o titulo. Padrao: {ARQUIVO_TITULO_PADRAO}",
     )
     parser.add_argument(
-        "-o",
-        "--saida",
+        "-o", "--saida",
         default=PASTA_SAIDA_PADRAO,
         help=f"Pasta onde os arquivos serao criados. Padrao: {PASTA_SAIDA_PADRAO}",
     )
     parser.add_argument(
-        "-v",
-        "--voz",
+        "-v", "--voz",
         default=VOZ_PADRAO,
         help=f"Voz do TTS. Padrao: {VOZ_PADRAO}",
     )
@@ -833,7 +663,7 @@ def main() -> None:
         instrucoes=args.instrucoes,
     )
 
-    print("Partes geradas com sucesso:")
+    print("Videos gerados com sucesso:")
     for arquivo in arquivos_saida:
         print(arquivo)
 

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gerador de Videos Narrados</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===== MODAL API KEY ===== -->
+  <div id="modal-overlay" class="hidden" role="dialog" aria-modal="true">
+    <div id="modal">
+      <div class="modal-header">
+        <h2>Chave da OpenAI</h2>
+        <button id="btn-close-modal" class="btn-icon" aria-label="Fechar">&times;</button>
+      </div>
+      <p class="modal-desc">Sua chave é salva localmente no arquivo <code>.env</code> e nunca é enviada para terceiros.</p>
+      <div class="input-group">
+        <label for="input-api-key">API Key</label>
+        <input type="password" id="input-api-key" placeholder="sk-proj-..." autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="modal-feedback" class="hidden"></div>
+      <div class="modal-actions">
+        <button id="btn-save-key" class="btn btn-primary">Salvar</button>
+        <button id="btn-close-modal-2" class="btn btn-ghost">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== HEADER ===== -->
+  <header>
+    <div class="header-inner">
+      <div class="header-brand">
+        <span class="brand-icon">&#9654;</span>
+        <span class="brand-name">Video Narrado</span>
+      </div>
+      <button id="btn-open-key" class="btn btn-ghost btn-sm">
+        <span id="key-indicator" class="key-dot"></span>
+        API Key
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== MAIN ===== -->
+  <main>
+
+    <!-- CONTEUDO -->
+    <section class="card">
+      <div class="section-header">
+        <h2>Conteudo da narracao</h2>
+        <div class="tab-bar" role="tablist">
+          <button class="tab active" data-tab="manual" role="tab" aria-selected="true">Escrever manualmente</button>
+          <button class="tab" data-tab="ia" role="tab" aria-selected="false">Gerar com IA</button>
+        </div>
+      </div>
+
+      <!-- Tab: IA -->
+      <div id="panel-ia" class="tab-panel hidden">
+        <div class="row-3">
+          <div class="field flex-grow">
+            <label for="input-tema">Tema da historia</label>
+            <input type="text" id="input-tema" placeholder="Ex: Uma IA que ganhou consciencia propria" />
+          </div>
+          <div class="field field-narrow">
+            <label for="input-linhas">Linhas</label>
+            <input type="number" id="input-linhas" value="10" min="3" max="60" />
+          </div>
+        </div>
+        <button id="btn-gerar-historia" class="btn btn-secondary">Gerar historia</button>
+        <div id="ia-spinner" class="spinner-row hidden">
+          <div class="spinner"></div>
+          <span>Gerando historia com IA...</span>
+        </div>
+      </div>
+
+      <!-- Titulo + Texto (shared) -->
+      <div class="field">
+        <label for="input-titulo">Titulo</label>
+        <input type="text" id="input-titulo" placeholder="Titulo do video" />
+      </div>
+      <div class="field">
+        <label for="input-texto">Texto da narracao</label>
+        <textarea id="input-texto" placeholder="Escreva ou gere a historia aqui..." rows="8"></textarea>
+      </div>
+    </section>
+
+    <!-- VIDEO -->
+    <section class="card">
+      <h2>Configuracoes do video</h2>
+
+      <div class="field">
+        <label for="input-url">Link do video do YouTube</label>
+        <input type="text" id="input-url" placeholder="https://www.youtube.com/watch?v=..." />
+      </div>
+
+      <div class="row-2">
+        <div class="field">
+          <label for="input-pasta">Pasta de saida</label>
+          <input type="text" id="input-pasta" value="video_narrado" />
+        </div>
+        <div class="field">
+          <label for="select-voz">Voz</label>
+          <div class="voice-row">
+            <select id="select-voz"></select>
+            <button id="btn-ouvir" class="btn btn-ghost btn-sm" title="Ouvir exemplo">
+              &#9654; Ouvir
+            </button>
+          </div>
+          <audio id="audio-preview" preload="none"></audio>
+          <div id="audio-bar" class="audio-bar hidden">
+            <div class="audio-progress-wrap">
+              <div id="audio-progress" class="audio-progress"></div>
+            </div>
+            <span id="audio-label" class="audio-label">coral</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="input-instrucoes">Instrucoes da voz</label>
+        <input type="text" id="input-instrucoes" value="Fale com naturalidade, em portugues do Brasil, com ritmo claro e envolvente." />
+      </div>
+
+      <div id="form-error" class="alert alert-error hidden"></div>
+
+      <button id="btn-gerar-videos" class="btn btn-primary btn-lg btn-full">
+        Gerar videos
+      </button>
+    </section>
+
+    <!-- PROGRESSO -->
+    <section id="section-progress" class="card hidden">
+      <div class="section-header">
+        <h2>Progresso</h2>
+        <div id="progress-badge" class="badge badge-running">Processando</div>
+      </div>
+      <div id="log" class="log"></div>
+    </section>
+
+    <!-- RESULTADO -->
+    <section id="section-result" class="card hidden">
+      <h2>Videos gerados</h2>
+      <div id="videos-grid" class="videos-grid">
+        <div class="video-card">
+          <div class="video-label">Vertical &mdash; 1080x1920 &mdash; Audio 1.5x</div>
+          <video id="video-vertical" controls playsinline></video>
+          <a id="dl-vertical" class="btn btn-ghost btn-sm" download>Download</a>
+        </div>
+        <div class="video-card">
+          <div class="video-label">Paisagem &mdash; 1920x1080 &mdash; Velocidade normal</div>
+          <video id="video-paisagem" controls playsinline></video>
+          <a id="dl-paisagem" class="btn btn-ghost btn-sm" download>Download</a>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
